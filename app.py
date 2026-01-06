@@ -1,129 +1,168 @@
 import streamlit as st
 import os
-import tempfile
-import time
-from markitdown import MarkItDown
+import pandas as pd
+from pypdf import PdfReader
+from docx import Document
+from pptx import Presentation
+from bs4 import BeautifulSoup
+import io
 
-# --- Configuration & Setup ---
+# --- Configuration ---
 st.set_page_config(
-    page_title="DocuConvert | Universal Markdown Tool",
-    page_icon="📝",
+    page_title="DocuConvert | Pro",
+    page_icon="📊",
     layout="wide"
 )
 
-def convert_document(file_path):
-    """
-    The Core Engine.
-    Instantiates MarkItDown to convert the provided file path into text.
-    Includes logic to handle potential internal request timeouts/headers if the
-    library fetches external resources (though primarily acts on local files here).
-    """
+# --- Helper Function: Format File Size ---
+def format_file_size(size_in_bytes):
+    """Converts bytes to readable KB or MB"""
+    if size_in_bytes < 1024:
+        return f"{size_in_bytes} bytes"
+    elif size_in_bytes < 1024 * 1024:
+        return f"{size_in_bytes / 1024:.2f} KB"
+    else:
+        return f"{size_in_bytes / (1024 * 1024):.2f} MB"
+
+# --- Conversion Logic (Pure Python) ---
+def convert_pdf(file_stream):
     try:
-        # Initialize the MarkItDown engine
-        md = MarkItDown()
-        
-        # In a real-world scenario involving URL fetching, we would configure 
-        # requests here. For local files, we rely on the library's internal 
-        # parsers. We wrap this in a strict try/except block as requested.
-        result = md.convert(file_path)
-        
-        # Return the textual content from the conversion result
-        return result.text_content
-        
+        reader = PdfReader(file_stream)
+        text = []
+        for page in reader.pages:
+            content = page.extract_text()
+            if content:
+                text.append(content)
+        return "\n\n".join(text)
     except Exception as e:
-        # Pass the exception up to be handled by the UI layer
-        raise e
+        return f"Error reading PDF: {str(e)}"
 
-# --- Main Interface ---
+def convert_docx(file_stream):
+    try:
+        doc = Document(file_stream)
+        return "\n".join([para.text for para in doc.paragraphs])
+    except Exception as e:
+        return f"Error reading DOCX: {str(e)}"
+
+def convert_pptx(file_stream):
+    try:
+        prs = Presentation(file_stream)
+        text = []
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    text.append(shape.text)
+        return "\n".join(text)
+    except Exception as e:
+        return f"Error reading PPTX: {str(e)}"
+
+def convert_excel(file_stream):
+    try:
+        xls = pd.read_excel(file_stream, sheet_name=None)
+        output = []
+        for sheet_name, df in xls.items():
+            output.append(f"### Sheet: {sheet_name}")
+            output.append(df.to_markdown(index=False))
+        return "\n\n".join(output)
+    except Exception as e:
+        return f"Error reading Excel: {str(e)}"
+
+def convert_html(file_stream):
+    try:
+        soup = BeautifulSoup(file_stream, "html.parser")
+        return soup.get_text(separator="\n")
+    except Exception as e:
+        return f"Error reading HTML: {str(e)}"
+
+# --- Main Application ---
 def main():
-    st.title("📝 Universal Document to Markdown Converter")
-    st.markdown("""
-    **Instantly convert** Word, PowerPoint, Excel, PDF, and HTML files into clean Markdown.
-    """)
+    st.title("📄 Universal Document to Markdown")
+    st.markdown("Convert documents securely and analyze storage efficiency.")
 
-    # [2] The Interface: Upload Area
-    with st.container():
-        st.markdown("### 1. Upload Documents")
-        uploaded_files = st.file_uploader(
-            "Drag and drop your files here (PDF, DOCX, XLSX, PPTX, HTML)", 
-            accept_multiple_files=True,
-            type=['docx', 'xlsx', 'pptx', 'pdf', 'html', 'htm']
-        )
+    # [2] Upload Area
+    uploaded_files = st.file_uploader(
+        "Drag and drop files (PDF, DOCX, XLSX, PPTX, HTML)", 
+        accept_multiple_files=True,
+        type=['pdf', 'docx', 'xlsx', 'pptx', 'html', 'htm']
+    )
 
-    # [3] Resilience & Processing
     if uploaded_files:
         st.markdown("---")
-        st.markdown("### 2. Conversion Results")
         
         for uploaded_file in uploaded_files:
-            # Create a visual container for each file
-            with st.expander(f"📄 Processing: {uploaded_file.name}", expanded=True):
+            file_name = uploaded_file.name
+            file_ext = os.path.splitext(file_name)[1].lower()
+            
+            with st.expander(f"Processing: {file_name}", expanded=True):
                 
-                # Create a temporary file to save the uploaded bytes
-                # MarkItDown requires a file path, not just bytes in memory
-                suffix = os.path.splitext(uploaded_file.name)[1]
+                # 1. Calculate Original Size
+                # seek(0,2) moves cursor to end to get size, then seek(0) resets for reading
+                uploaded_file.seek(0, 2)
+                original_size = uploaded_file.tell()
+                uploaded_file.seek(0)
                 
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    tmp_file_path = tmp_file.name
+                # 2. Conversion
+                converted_text = ""
+                if file_ext == ".pdf":
+                    converted_text = convert_pdf(uploaded_file)
+                elif file_ext == ".docx":
+                    converted_text = convert_docx(uploaded_file)
+                elif file_ext == ".pptx":
+                    converted_text = convert_pptx(uploaded_file)
+                elif file_ext == ".xlsx":
+                    converted_text = convert_excel(uploaded_file)
+                elif file_ext in [".html", ".htm"]:
+                    converted_text = convert_html(uploaded_file)
+                else:
+                    st.error(f"⚠️ Format {file_ext} not supported.")
+                    continue
 
-                try:
-                    # Attempt conversion with a simple timer to simulate timeout enforcement
-                    # (Strict timeout logic is usually threaded, but this keeps the app single-file simple)
-                    start_time = time.time()
+                if not converted_text or converted_text.strip() == "":
+                    st.warning("⚠️ No text extracted.")
+                else:
+                    # 3. Calculate Converted Size (approx bytes in UTF-8)
+                    converted_bytes = len(converted_text.encode('utf-8'))
                     
-                    # Convert
-                    converted_text = convert_document(tmp_file_path)
+                    # 4. Create Tabs for View
+                    tab1, tab2 = st.tabs(["📝 Preview & Download", "📊 File Size Comparison"])
                     
-                    elapsed_time = time.time() - start_time
-                    if elapsed_time > 5:
-                        st.warning(f"⚠️ {uploaded_file.name} took longer than 5s to process.")
-
-                    # [4] Naming Logic: Preserve original name
-                    base_name = os.path.splitext(uploaded_file.name)[0]
-                    md_filename = f"{base_name}_converted.md"
-                    txt_filename = f"{base_name}_converted.txt"
-
-                    # Layout for Preview and Actions
-                    col1, col2 = st.columns([3, 1])
-
-                    with col1:
-                        st.caption("Preview (Scrollable)")
-                        # [2] Instant Preview
-                        st.text_area(
-                            label="Markdown Output",
-                            value=converted_text,
-                            height=300,
-                            key=f"preview_{uploaded_file.name}"
-                        )
-
-                    with col2:
-                        st.caption("Download Options")
-                        # [2] Download Options
-                        st.download_button(
-                            label="📥 Download .md",
-                            data=converted_text,
-                            file_name=md_filename,
-                            mime="text/markdown"
-                        )
+                    # --- Tab 1: Preview ---
+                    with tab1:
+                        st.text_area("Markdown Output", converted_text, height=250, key=f"text_{file_name}")
                         
-                        st.download_button(
-                            label="📄 Download .txt",
-                            data=converted_text,
-                            file_name=txt_filename,
-                            mime="text/plain"
-                        )
+                        base_name = os.path.splitext(file_name)[0]
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.download_button("📥 Download Markdown", converted_text, f"{base_name}.md")
+                        with c2:
+                            st.download_button("📄 Download Text", converted_text, f"{base_name}.txt")
 
-                except Exception as e:
-                    # [3] Resilience: Polite Error Message
-                    st.error(f"⚠️ Could not read **{uploaded_file.name}**. Please check the format or file integrity.")
-                    # Optional: Log the specific error to console for the developer
-                    print(f"Error processing {uploaded_file.name}: {str(e)}")
-                
-                finally:
-                    # Cleanup: Remove the temporary file to save space
-                    if os.path.exists(tmp_file_path):
-                        os.remove(tmp_file_path)
+                    # --- Tab 2: Comparison ---
+                    with tab2:
+                        # Calculate reduction percentage
+                        if original_size > 0:
+                            reduction = (1 - (converted_bytes / original_size)) * 100
+                        else:
+                            reduction = 0
+                            
+                        st.markdown("#### 📉 Storage Efficiency Analysis")
+                        
+                        # Create a clean data table
+                        data = {
+                            "Metric": ["Original File Size", "Converted Text Size", "Space Saved"],
+                            "Value": [
+                                format_file_size(original_size), 
+                                format_file_size(converted_bytes),
+                                f"{reduction:.1f}%"
+                            ]
+                        }
+                        df_comparison = pd.DataFrame(data)
+                        
+                        # Display table
+                        st.table(df_comparison)
+                        
+                        # Big visual callout
+                        st.info(f"✨ The text version is **{reduction:.1f}% smaller** than the original file.")
 
 if __name__ == "__main__":
     main()
