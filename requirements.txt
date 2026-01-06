@@ -1,4 +1,7 @@
 streamlit
-markitdown
-openai     # Optional: markitdown uses this for some advanced description features
-requests   # Required dependency often missed
+pypdf
+python-docx
+pandas
+openpyxl
+python-pptx
+beautifulsoup4
