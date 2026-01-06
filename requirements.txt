@@ -1,4 +1,5 @@
 streamlit
+markitdown
 pypdf
 python-docx
 pandas
